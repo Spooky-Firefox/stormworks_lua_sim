@@ -122,7 +122,28 @@ function onSimAfterTick(sim, tick) -- after onTick/onDraw: assertions
 end
 ```
 
-The full bench API is `setNumber`, `setBool`, `getNumber`, `getBool`, `getOutputNumber`, `getOutputBool`, `setProperty`, `touch(x, y, down[, 2])`, `log(...)`, `stop()` and `getScreenSize()`.
+The full bench API is `setNumber`, `setBool`, `getNumber`, `getBool`, `getOutputNumber`, `getOutputBool`, `setProperty`, `getProperty`, `touch(x, y, down[, 2])`, `getTouch([2])`, `log(...)`, `stop()`, `getScreenSize()` and `addController(path[, props])`.
+
+A bench can `require` Lua files that sit next to it, which is handy for helpers shared between benches.
+
+#### Chained microcontrollers
+
+`sim:addController(path, props)` loads another microcontroller script. The path is relative to the bench, and the controller uses the `lib` folders of its own `swlua.toml`. This lets you test a controller that is fed by another one, for example a HUD fed by a radar processor, or a radar fed by sensors. The bench moves the values between them:
+
+```lua
+function onSimInit(sim)
+    radar = sim:addController("../radar/src/main.lua", {radar_yaw_fov = 0.02})
+end
+
+function onSimTick(sim, tick)
+    radar:setInputs(world.physics())         -- setInputs(numbers, bools, num_start, bool_start)
+    radar:tick()                             -- runs its onTick; errors stop the simulation
+    local nums, bools = radar:getOutputs()
+    for i = 1, 19 do sim:setNumber(i, nums[i]) sim:setBool(i, bools[i]) end
+end
+```
+
+A controller handle also has `setNumber`, `setBool`, `getNumber`, `getBool` (these read its outputs) and `setProperty`. Its `debug.log` output appears in the log with its name in front. Saving any of its files reloads the simulation.
 
 A failing `assert` in the bench makes `swlua run` exit with a non-zero code. That lets a bench work as an automated test, for example in CI.
 
@@ -167,6 +188,8 @@ end
 | `world.aimRadar(id, yaw, pitch)` | Point a radar that has no output channels |
 | `world.getRadar(id)` | Returns `{yaw, pitch, contacts = {{slot, target, distance, azimuth, elevation, ticks}}}` |
 | `world.writeRadar(id, num_start, bool_start)` | Radar composite. Each of 8 slots gets 4 numbers (distance, azimuth, elevation, ticks since detection) and 1 detected bool. Angles are in turns, relative to the radar's facing |
+| `world.radarValues(id)` | The same values as `writeRadar`, returned as two tables, for passing to a controller |
+| `world.toLocal(pos)` | A world position in the vehicle frame (x right, y up, z forward) |
 | `world.physics()` / `world.writePhysics(num_start)` | The 18 physics sensor numbers: position, Euler angles, local velocity, angular velocity, absolute speeds, tilts and compass |
 
 Conventions:
@@ -179,10 +202,11 @@ Conventions:
 - **Pivot**: positive yaw turns right.
 - **Random numbers**: radar noise is seeded, so runs repeat exactly.
 
-[`examples/stormworks-hud/bench.lua`](examples/stormworks-hud/bench.lua) wires up the channel layout of [stormworks-HUD](https://github.com/Spooky-Firefox/stormworks-HUD):
+[`examples/stormworks-hud/bench.lua`](examples/stormworks-hud/bench.lua) is a copy of the radar bench from [stormworks-HUD](https://github.com/Spooky-Firefox/stormworks-HUD), which is itself a swlua project with a `radar/` and a `hud/` controller. To run it:
 
 ```sh
-swlua sim ../stormworks-HUD/main.lua -b examples/stormworks-hud/bench.lua -s 3x3 --no-touch
+cd stormworks-HUD/radar && swlua sim   # radar controller with its monitor
+cd stormworks-HUD/hud && swlua sim     # HUD, fed by the real radar controller
 ```
 
 ## swlua.toml

@@ -1,6 +1,7 @@
 //! Microcontroller simulator: runs a script against emulated composite
 //! inputs/outputs, properties, a monitor and `async.httpGet`.
 
+mod controller;
 pub mod font;
 pub mod screen;
 pub mod world;
@@ -64,8 +65,13 @@ pub struct State {
 pub enum Source {
     /// Run a file directly; `require` loads modules from the search path.
     File { main: PathBuf, search: Vec<PathBuf> },
-    /// Run already bundled code (e.g. the minified output).
-    Code { name: String, code: String },
+    /// Run already bundled code (e.g. the minified output). `search` is
+    /// only used for controllers a bench adds.
+    Code {
+        name: String,
+        code: String,
+        search: Vec<PathBuf>,
+    },
 }
 
 pub struct SimOptions {
@@ -88,6 +94,8 @@ pub struct Sim {
     http_rx: Receiver<(u16, String, String)>,
     /// Files the running script was loaded from (for reload-on-change).
     pub files: Rc<RefCell<Vec<PathBuf>>>,
+    /// `require` search path, shared with controllers the bench adds.
+    search: Vec<PathBuf>,
 }
 
 fn lerr(e: mlua::Error) -> anyhow::Error {
@@ -161,6 +169,10 @@ impl Sim {
         )
         .map_err(lerr)?;
         let mut sim = Sim {
+            search: match &source {
+                Source::File { search, .. } => search.clone(),
+                Source::Code { search, .. } => search.clone(),
+            },
             lua,
             bench: None,
             st,
@@ -182,7 +194,7 @@ impl Sim {
                         .with_context(|| format!("reading {}", main.display()))?,
                 )
             }
-            Source::Code { name, code } => (format!("={name}"), code.clone()),
+            Source::Code { name, code, .. } => (format!("={name}"), code.clone()),
         };
 
         if let Some(bench) = &opts.bench {
@@ -668,6 +680,22 @@ impl Sim {
             let (w, h) = s.screen.as_ref().map_or((0, 0), |s| (s.w, s.h));
             Ok(Value::Table(lua.create_sequence_from([w, h])?))
         });
+        func!("getProperty", |lua, a| |s: &mut State| {
+            let name = match a.first() {
+                Some(Value::String(n)) => n.to_string_lossy().to_string(),
+                _ => {
+                    return Err(mlua::Error::runtime(
+                        "getProperty(name): name must be a string",
+                    ));
+                }
+            };
+            Ok(match s.props.get(&name) {
+                Some(PropValue::Number(n)) => Value::Number(*n),
+                Some(PropValue::Bool(b)) => Value::Boolean(*b),
+                Some(PropValue::Text(t)) => Value::String(lua.create_string(t)?),
+                None => Value::Nil,
+            })
+        });
         func!("getTouch", |lua, a| |s: &mut State| {
             // getTouch([which]) -> x, y, down as a table {x, y, down}
             let t = s.touch[if num(&a, 0) >= 2.0 { 1 } else { 0 }];
@@ -678,7 +706,25 @@ impl Sim {
             Ok(Value::Table(r))
         });
         bench.globals().set("sim", api)?;
+        // Let benches require helpers that sit next to them.
+        if let Some(dir) = path.parent() {
+            let package: Table = bench.globals().get("package")?;
+            let old: String = package.get("path")?;
+            let dir = if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            };
+            package.set("path", format!("{}/?.lua;{old}", dir.display()))?;
+        }
         world_lua::install(&bench, self.st.clone())?;
+        controller::install(
+            &bench,
+            self.st.clone(),
+            self.files.clone(),
+            self.search.clone(),
+            path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        )?;
         let code = std::fs::read_to_string(path)
             .map_err(|e| mlua::Error::runtime(format!("reading {}: {e}", path.display())))?;
         bench
@@ -890,6 +936,7 @@ mod tests {
         let mut sim = Sim::new(
             Source::Code {
                 name: "t".into(),
+                search: vec![],
                 code: code.into(),
             },
             o,
@@ -910,6 +957,7 @@ mod tests {
         let mut sim = Sim::new(
             Source::Code {
                 name: "t".into(),
+                search: vec![],
                 code: "function onTick() error('boom') end".into(),
             },
             opts(),
@@ -921,6 +969,7 @@ mod tests {
         let mut sim = Sim::new(
             Source::Code {
                 name: "t".into(),
+                search: vec![],
                 code: "function onTick() while true do end end".into(),
             },
             opts(),
@@ -936,6 +985,7 @@ mod tests {
         let sim = Sim::new(
             Source::Code {
                 name: "t".into(),
+                search: vec![],
                 code: code.into(),
             },
             opts(),
@@ -977,6 +1027,7 @@ mod tests {
         let mut sim = Sim::new(
             Source::Code {
                 name: "t".into(),
+                search: vec![],
                 code: code.into(),
             },
             o,
@@ -1001,6 +1052,60 @@ mod tests {
             s.out_num[2]
         );
         drop(s);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn bench_chains_controllers() {
+        let dir = std::env::temp_dir().join(format!("swlua_ctl_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("doubler.lua"),
+            "function onTick() output.setNumber(1, input.getNumber(1) * property.getNumber('k')) end",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("helper.lua"),
+            "function feed(c, v) c:setNumber(1, v) end",
+        )
+        .unwrap();
+        let bench = dir.join("bench.lua");
+        std::fs::write(
+            &bench,
+            r#"
+            require("helper")
+            function onSimInit(sim) ctl = sim:addController("doubler.lua", {k = 2}) end
+            function onSimTick(sim, tick)
+                feed(ctl, tick + 1)
+                ctl:tick()
+                sim:setNumber(1, ctl:getNumber(1))
+            end
+            "#,
+        )
+        .unwrap();
+        let code = "function onTick() output.setNumber(1, input.getNumber(1)) end";
+        let mut o = opts();
+        o.bench = Some(bench);
+        let mut sim = Sim::new(
+            Source::Code {
+                name: "t".into(),
+                search: vec![],
+                code: code.into(),
+            },
+            o,
+        )
+        .unwrap();
+        for _ in 0..3 {
+            sim.step().unwrap();
+        }
+        assert_eq!(sim.st.borrow().out_num[0], 6.0);
+        assert!(
+            sim.files
+                .borrow()
+                .iter()
+                .any(|f| f.ends_with("doubler.lua")),
+            "controller files are watched"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }

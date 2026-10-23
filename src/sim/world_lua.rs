@@ -232,6 +232,23 @@ pub fn install(lua: &Lua, st: Rc<RefCell<State>>) -> mlua::Result<()> {
             Ok(())
         }
     );
+    f!("radarValues", |lua, s, world, id: u32| {
+        let (n, b) = world
+            .radar_composite(id)
+            .ok_or_else(|| mlua::Error::runtime(format!("no radar {id}")))?;
+        Ok((n.to_vec(), b.to_vec()))
+    });
+    f!("toLocal", |lua, s, world, p: Value| {
+        let p = vec_arg(Some(p))?.unwrap_or_default();
+        vec_table(
+            lua,
+            world
+                .vehicle
+                .rot
+                .transpose()
+                .apply(p.sub(world.vehicle.pos)),
+        )
+    });
     f!("physics", |lua, s, world, _a: ()| lua
         .create_sequence_from(world.physics()));
     f!("writePhysics", |lua, s, world, start: Option<usize>| {

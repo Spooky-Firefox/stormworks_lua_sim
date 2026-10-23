@@ -500,6 +500,7 @@ fn sim_factory(a: &SimArgs, cfg: Option<&Config>) -> Result<(server::Factory, f6
                 sim::Source::Code {
                     name: "minified".into(),
                     code,
+                    search: lib.clone(),
                 },
                 opts,
             )?;
