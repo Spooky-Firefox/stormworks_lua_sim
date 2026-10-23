@@ -19,6 +19,14 @@ pub struct VarInfo {
 pub struct GlobalInfo {
     pub refs: usize,
     pub assigned: bool,
+    /// References that are assignment targets.
+    pub writes: usize,
+}
+
+impl GlobalInfo {
+    pub fn reads(&self) -> usize {
+        self.refs - self.writes
+    }
 }
 
 #[derive(Debug, Default)]
@@ -73,6 +81,7 @@ impl Resolver {
                 let g = self.res.globals.entry(n.text.clone()).or_default();
                 g.refs += 1;
                 g.assigned |= assign;
+                g.writes += assign as usize;
                 for &w in &self.stack {
                     self.res.vars[w].globals_in_scope.insert(n.text.clone());
                 }

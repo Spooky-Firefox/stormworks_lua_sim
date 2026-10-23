@@ -52,6 +52,8 @@ pub struct Minify {
     pub rename_globals: bool,
     pub hoist_api: bool,
     pub hoist_constants: bool,
+    /// Drop top-level functions and constants that nothing reads.
+    pub remove_unused: bool,
 }
 
 impl Default for Minify {
@@ -61,6 +63,7 @@ impl Default for Minify {
             rename_globals: true,
             hoist_api: true,
             hoist_constants: true,
+            remove_unused: true,
         }
     }
 }

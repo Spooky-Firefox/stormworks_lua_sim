@@ -58,10 +58,11 @@ The minifier parses the whole Lua 5.3 grammar (goto, integer division, bitwise o
 
 - **Comments and whitespace** are removed. A space is kept only where two tokens would merge, such as `a- -b` or `1 ..x`.
 - **Parentheses** are rebuilt from operator precedence. Parentheses that change meaning are kept, such as `(f())`, which truncates to one value.
-- **Locals** get the shortest names, with the most-used variables named first. Variables whose lifetimes don't overlap share a name.
+- **Locals** get the shortest names. Locals and renamed globals are named together, most-used first. Variables whose lifetimes don't overlap share a name.
 - **Globals your script defines** are renamed too. Callbacks (`onTick`, `onDraw`, `httpReply`) and the game API are never renamed. Renaming switches off if the script uses `_ENV`, `_G`, `rawget` or `load`.
 - **Method definitions** `function a:b()` become `function a.b(self)`, so `self` can be shortened as well.
 - **API caching**: `screen.drawRect` used three times becomes one `local a=screen.drawRect` plus calls to `a(...)`. This only happens when it saves characters, and never for a table your script writes to.
+- **Unused definitions**: top-level functions and constants that nothing reads are removed, including those inside bundled modules. This way, a shared library only costs the characters for the parts a script uses. `--keep-unused` turns this off.
 - **Repeated literals**: repeated long strings and numbers move into locals when that saves space.
 - **Numbers and strings** are written in their shortest form. `0.5` becomes `.5` and `1000000.0` becomes `1e6`. Integers and floats stay distinct, as Lua 5.3 requires. Each string gets whichever quote style needs fewer escapes. A call with one string or table argument loses its parentheses, so `f("x")` becomes `f"x"`.
 

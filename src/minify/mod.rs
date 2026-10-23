@@ -4,6 +4,7 @@ pub mod hoist;
 pub mod printer;
 pub mod rename;
 pub mod resolve;
+pub mod unused;
 pub mod visit;
 
 use crate::lua::ast::Block;
@@ -17,6 +18,8 @@ pub struct Options {
     pub hoist_api: bool,
     /// Cache repeated string and number literals in locals.
     pub hoist_constants: bool,
+    /// Drop top-level functions and constants nothing reads.
+    pub remove_unused: bool,
     pub style: Style,
 }
 
@@ -27,6 +30,7 @@ impl Default for Options {
             rename_globals: true,
             hoist_api: true,
             hoist_constants: true,
+            remove_unused: true,
             style: Style::Compact,
         }
     }
@@ -40,12 +44,16 @@ impl Options {
             rename_globals: false,
             hoist_api: false,
             hoist_constants: false,
+            remove_unused: false,
             style: Style::Compact,
         }
     }
 }
 
 pub fn minify_ast(chunk: &mut Block, opts: &Options) -> String {
+    if opts.remove_unused {
+        unused::remove_unused(chunk);
+    }
     // Hoisting introduces placeholder locals, so it requires local renaming.
     if opts.rename_locals && (opts.hoist_api || opts.hoist_constants) {
         let res = resolve::resolve(chunk);

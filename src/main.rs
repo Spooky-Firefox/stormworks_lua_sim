@@ -114,6 +114,9 @@ struct MinifyArgs {
     /// Do not deduplicate repeated string/number literals.
     #[arg(long)]
     no_constants: bool,
+    /// Keep top-level functions and constants that nothing uses.
+    #[arg(long)]
+    keep_unused: bool,
     /// Only strip comments and whitespace.
     #[arg(long)]
     whitespace_only: bool,
@@ -350,6 +353,7 @@ fn minify_options(a: &MinifyArgs, cfg: Option<&Config>) -> minify::Options {
         rename_globals: m.rename_globals && !a.keep_globals,
         hoist_api: m.hoist_api && !a.no_hoist,
         hoist_constants: m.hoist_constants && !a.no_constants,
+        remove_unused: m.remove_unused && !a.keep_unused,
         style: if a.pretty {
             minify::Style::Pretty
         } else {
@@ -570,6 +574,7 @@ rename_locals = true
 rename_globals = true
 hoist_api = true
 hoist_constants = true
+remove_unused = true
 
 [sim]
 screen = "{screen}"

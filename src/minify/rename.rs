@@ -117,6 +117,9 @@ pub fn plan(res: &Resolution, opts: &RenameOptions) -> (Vec<String>, HashMap<Str
         })
         .map(|(n, _)| n.clone())
         .collect();
+    if opts.globals && opts.locals && !dynamic_env {
+        return plan_joint(res, &kept);
+    }
     if opts.globals && !dynamic_env {
         let mut renamable: Vec<(&String, usize)> = res
             .globals
@@ -159,6 +162,85 @@ pub fn plan(res: &Resolution, opts: &RenameOptions) -> (Vec<String>, HashMap<Str
         out[v] = Some(name);
     }
     (out.into_iter().map(Option::unwrap).collect(), global_map)
+}
+
+/// Names globals and locals together, most referenced first, so a heavily
+/// used local (e.g. a cached `screen.drawLine`) gets a one-letter name before
+/// a rarely used global does.
+fn plan_joint(res: &Resolution, kept: &HashSet<String>) -> (Vec<String>, HashMap<String, String>) {
+    enum Item<'a> {
+        Global(&'a String),
+        Local(usize),
+    }
+    let mut items: Vec<(usize, Item)> = res
+        .globals
+        .iter()
+        .filter(|(n, _)| !kept.contains(*n))
+        .map(|(n, g)| (g.refs, Item::Global(n)))
+        .chain(
+            res.vars
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (v.refs + 1, Item::Local(i))),
+        )
+        .collect();
+    // Stable order for equal counts: globals by name, then locals by id.
+    items.sort_by(|a, b| {
+        b.0.cmp(&a.0).then_with(|| match (&a.1, &b.1) {
+            (Item::Global(x), Item::Global(y)) => x.cmp(y),
+            (Item::Local(x), Item::Local(y)) => x.cmp(y),
+            (Item::Global(_), Item::Local(_)) => std::cmp::Ordering::Less,
+            (Item::Local(_), Item::Global(_)) => std::cmp::Ordering::Greater,
+        })
+    });
+    // Locals whose scope contains a reference to each global.
+    let mut in_scope: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, v) in res.vars.iter().enumerate() {
+        for g in &v.globals_in_scope {
+            in_scope.entry(g.as_str()).or_default().push(i);
+        }
+    }
+    let mut globals: HashMap<String, String> = HashMap::new();
+    let mut taken: HashSet<String> = kept.clone();
+    let mut locals: Vec<Option<String>> = vec![None; res.vars.len()];
+    for (_, item) in items {
+        match item {
+            Item::Global(g) => {
+                let scoped = in_scope.get(g.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+                let name = NameGen::new()
+                    .find(|n| {
+                        !taken.contains(n)
+                            && scoped
+                                .iter()
+                                .all(|&w| locals[w].as_deref() != Some(n.as_str()))
+                    })
+                    .unwrap();
+                taken.insert(name.clone());
+                globals.insert(g.clone(), name);
+            }
+            Item::Local(v) => {
+                let info = &res.vars[v];
+                let forbidden: HashSet<&str> = info
+                    .globals_in_scope
+                    .iter()
+                    .filter_map(|g| {
+                        if kept.contains(g) {
+                            Some(g.as_str())
+                        } else {
+                            globals.get(g).map(String::as_str)
+                        }
+                    })
+                    .chain(info.conflicts.iter().filter_map(|w| locals[*w].as_deref()))
+                    .collect();
+                locals[v] = Some(
+                    NameGen::new()
+                        .find(|n| !forbidden.contains(n.as_str()))
+                        .unwrap(),
+                );
+            }
+        }
+    }
+    (locals.into_iter().map(Option::unwrap).collect(), globals)
 }
 
 /// Rewrites every name in the tree according to a plan.
