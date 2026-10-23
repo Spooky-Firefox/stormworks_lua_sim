@@ -414,8 +414,9 @@ impl World {
         Some((n, b))
     }
 
-    /// Physics sensor composite numbers 1-18.
-    pub fn physics(&self) -> [f64; 18] {
+    /// Physics sensor composite numbers 1-17. The sensor has two tilt
+    /// channels: 15 = local Z (forward) tilt, 16 = local X (right) tilt.
+    pub fn physics(&self) -> [f64; 17] {
         let v = &self.vehicle;
         let e = v.rot.to_euler();
         let vel = v.velocity();
@@ -440,7 +441,6 @@ impl World {
             w.len(),
             tilt(v.rot.forward()),
             tilt(v.rot.right()),
-            tilt(v.rot.up()),
             // Compass: 0 = north, counter-clockwise positive (east = -0.25).
             -f.x.atan2(f.z) / TAU,
         ]

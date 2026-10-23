@@ -1019,7 +1019,7 @@ mod tests {
                 output.setNumber(1, 0)
                 output.setNumber(2, input.getNumber(1))
                 output.setBool(1, input.getBool(1))
-                output.setNumber(3, input.getNumber(26)) -- physics compass
+                output.setNumber(3, input.getNumber(25)) -- physics compass (17)
             end
         "#;
         let mut o = opts();

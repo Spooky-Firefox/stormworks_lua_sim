@@ -185,7 +185,7 @@ function onSimTick(sim, tick)
         world.writeRadar(radar, 1, 1)   -- numbers 1-32 + bools 1-8
         sim:setBool(9, false)
     else
-        world.writePhysics(1)           -- numbers 1-18
+        world.writePhysics(1)           -- numbers 1-17
         sim:setBool(9, true)
     end
 end
@@ -202,7 +202,7 @@ end
 | `world.writeRadar(id, num_start, bool_start)` | Radar composite. Each of 8 slots gets 4 numbers (distance, azimuth, elevation, ticks since detection) and 1 detected bool. Angles are in turns, relative to the radar's facing |
 | `world.radarValues(id)` | The same values as `writeRadar`, returned as two tables, for passing to a controller |
 | `world.toLocal(pos)` | A world position in the vehicle frame (x right, y up, z forward) |
-| `world.physics()` / `world.writePhysics(num_start)` | The 18 physics sensor numbers: position, Euler angles, local velocity, angular velocity, absolute speeds, tilts and compass |
+| `world.physics()` / `world.writePhysics(num_start)` | The 17 physics sensor numbers: position (1-3), Euler angles (4-6), local velocity (7-9), angular velocity (10-12), absolute speeds (13-14), local Z (forward) and X (right) tilt (15-16) and compass (17) |
 
 Conventions:
 
