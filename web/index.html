@@ -43,6 +43,13 @@
   #error { display: none; color: var(--err); white-space: pre-wrap; border-color: var(--err); }
   .props input { width: 120px; }
   .hint { color: var(--dim); font-size: 12px; }
+  #world3d { width: 100%; height: 440px; display: block; background: #0b0e13; border-radius: 4px; cursor: grab; outline: none; }
+  #world3d:focus { box-shadow: 0 0 0 1px var(--accent); }
+  .wbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 700px) { .cols2 { grid-template-columns: 1fr; } }
+  td.num { text-align: right; }
+  .det { color: var(--on); }
 </style>
 </head>
 <body>
@@ -76,6 +83,21 @@
     </section>
   </div>
   <div>
+    <section id="worldsec" style="display:none">
+      <h2>World <span class="hint">— drag to orbit, wheel to zoom; click the view, then fly with W/S (speed), A/D (yaw), ↑/↓ (pitch), Q/E (roll), L (level)</span></h2>
+      <div class="wbar">
+        <label class="stat">camera <select id="cam"><option value="follow">follow vehicle</option><option value="radar">radar view</option><option value="free">free</option></select></label>
+        <label class="stat"><input type="checkbox" id="showtrails" checked> trails</label>
+        <label class="stat"><input type="checkbox" id="showbeam" checked> beam</label>
+        <button id="addtgt">+ target ahead</button>
+        <span class="stat" id="vstat"></span>
+      </div>
+      <canvas id="world3d" tabindex="0"></canvas>
+      <div class="cols2" style="margin-top:8px">
+        <div><h2>Targets</h2><table id="tgts"></table></div>
+        <div><h2>Physics sensor</h2><table id="phys"></table></div>
+      </div>
+    </section>
     <section>
       <h2>Outputs</h2>
       <div class="grid" id="outnum"></div>
@@ -244,7 +266,7 @@ $('clearlog').onclick = () => { $('log').innerHTML = ''; post('/api/control', {a
 $('zoom').onchange = () => { zoom = parseInt($('zoom').value); if (screenW) resizeScreen(screenW, screenH); };
 $('padd').onclick = () => { const n = $('pname').value.trim(); if (n) post('/api/property', {name: n, value: parseValue($('pval').value)}); };
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'INPUT' || e.target === $('world3d')) return;
   if (e.key === ' ') { e.preventDefault(); $('play').click(); }
   if (e.key === '.') $('step').click();
   if (e.key === 'r') $('reset').click();
@@ -253,6 +275,207 @@ document.addEventListener('keydown', (e) => {
 buildChannels();
 pollState();
 pollFrame();
+
+// ---------- 3D world view ----------
+const W3 = $('world3d'), g3 = W3.getContext('2d');
+let world = null, camYaw = -0.6, camPitch = 0.35, camDist = 1500, freeFocus = null;
+const PHYS_LABELS = ['pos x', 'pos y (alt)', 'pos z', 'euler x', 'euler y', 'euler z', 'vel x (local)', 'vel y (local)', 'vel z (local)',
+  'ang vel x', 'ang vel y', 'ang vel z', 'abs vel', 'abs ang vel', 'tilt fwd', 'tilt right', 'tilt up', 'compass'];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const norm = (a) => mul(a, 1 / (Math.hypot(...a) || 1));
+const crossLH = (u, f) => [u[1] * f[2] - u[2] * f[1], u[2] * f[0] - u[0] * f[2], u[0] * f[1] - u[1] * f[0]];
+// Row-major local->world matrix applied to a local vector.
+const rotApply = (m, v) => [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
+const turnsDir = (az, el) => { const a = az * 2 * Math.PI, e = el * 2 * Math.PI; return [Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e)]; };
+
+let cam = null;
+function setupCamera() {
+  const w = W3.clientWidth, h = W3.clientHeight;
+  if (W3.width !== w * devicePixelRatio) { W3.width = w * devicePixelRatio; W3.height = h * devicePixelRatio; }
+  const mode = $('cam').value, v = world.vehicle;
+  let eye, f, up = [0, 1, 0], fov = 60;
+  if (mode === 'radar' && world.radars.length) {
+    const r = world.radars[0];
+    eye = r.pos; f = rotApply(r.rot, [0, 0, 1]); up = rotApply(r.rot, [0, 1, 0]);
+    fov = Math.min(120, Math.max(10, Math.max(r.fov_x, r.fov_y) * 360 * 2.5));
+  } else {
+    const focus = mode === 'free' ? (freeFocus || v.pos) : v.pos;
+    const dir = [Math.cos(camPitch) * Math.sin(camYaw), -Math.sin(camPitch), Math.cos(camPitch) * Math.cos(camYaw)];
+    eye = sub(focus, mul(dir, camDist)); f = dir;
+  }
+  f = norm(f);
+  let r = norm(crossLH(up, f));
+  const u = crossLH(f, r);
+  const F = (h / 2) / Math.tan(fov * Math.PI / 360);
+  cam = {eye, f, r, u, F, w, h};
+}
+const toCam = (p) => { const d = sub(p, cam.eye); return [dot(d, cam.r), dot(d, cam.u), dot(d, cam.f)]; };
+const projC = (c) => [cam.w / 2 + c[0] / c[2] * cam.F, cam.h / 2 - c[1] / c[2] * cam.F];
+const NEAR = 0.5;
+function line3(a, b) {
+  let ca = toCam(a), cb = toCam(b);
+  if (ca[2] < NEAR && cb[2] < NEAR) return;
+  if (ca[2] < NEAR || cb[2] < NEAR) {
+    const t = (NEAR - ca[2]) / (cb[2] - ca[2]);
+    const m = [ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, NEAR];
+    if (ca[2] < NEAR) ca = m; else cb = m;
+  }
+  const pa = projC(ca), pb = projC(cb);
+  g3.moveTo(pa[0], pa[1]); g3.lineTo(pb[0], pb[1]);
+}
+function stroke(color, width, fn) { g3.beginPath(); g3.strokeStyle = color; g3.lineWidth = width || 1; fn(); g3.stroke(); }
+function point(p) { const c = toCam(p); return c[2] > NEAR ? projC(c) : null; }
+
+function drawWorld() {
+  if (!world || world.empty === undefined) return;
+  setupCamera();
+  g3.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  g3.fillStyle = '#0b0e13'; g3.fillRect(0, 0, cam.w, cam.h);
+  const v = world.vehicle;
+  // Sea-level grid around the vehicle, spacing scaled with the camera distance.
+  const span = Math.max(500, camDist * 3, ...world.targets.map(t => t.distance * 1.2));
+  let step = Math.pow(10, Math.floor(Math.log10(span / 8)));
+  if (span / step > 40) step *= 5;
+  const gx = Math.round(v.pos[0] / step) * step, gz = Math.round(v.pos[2] / step) * step;
+  const n = Math.ceil(span / step);
+  stroke('#1b2430', 1, () => {
+    for (let i = -n; i <= n; i++) {
+      line3([gx + i * step, 0, gz - n * step], [gx + i * step, 0, gz + n * step]);
+      line3([gx - n * step, 0, gz + i * step], [gx + n * step, 0, gz + i * step]);
+    }
+  });
+  stroke('#3a4a5e', 1.5, () => line3([gx, 0, gz], [gx, 0, gz + n * step]));
+  const np = point([gx, 0, gz + n * step]);
+  g3.fillStyle = '#6d7d93'; g3.font = '12px monospace';
+  if (np) g3.fillText('N', np[0] + 4, np[1]);
+  g3.fillText(`grid ${step >= 1000 ? step / 1000 + ' km' : step + ' m'}`, 8, cam.h - 8);
+
+  // Radar beams.
+  if ($('showbeam').checked) for (const r of world.radars) {
+    const len = Math.min(r.range, Math.max(span, 500));
+    const hx = r.fov_x / 2, hy = r.fov_y / 2;
+    const corners = [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy]].map(([a, e]) => add(r.pos, mul(rotApply(r.rot, turnsDir(a, e)), len)));
+    stroke('rgba(79,182,255,0.55)', 1, () => {
+      for (const c of corners) line3(r.pos, c);
+      for (let i = 0; i < 4; i++) line3(corners[i], corners[(i + 1) % 4]);
+    });
+    stroke('rgba(79,182,255,0.25)', 1, () => line3(r.pos, add(r.pos, mul(rotApply(r.rot, [0, 0, 1]), len))));
+  }
+
+  // Targets.
+  for (const t of world.targets) {
+    const col = t.detected ? '#46c47e' : '#9aa4b5';
+    if ($('showtrails').checked && t.trail.length > 1) stroke('rgba(154,164,181,0.35)', 1, () => {
+      for (let i = 1; i < t.trail.length; i++) line3(t.trail[i - 1], t.trail[i]);
+      line3(t.trail[t.trail.length - 1], t.pos);
+    });
+    stroke('rgba(154,164,181,0.25)', 1, () => line3(t.pos, [t.pos[0], 0, t.pos[2]]));
+    stroke(col, 1, () => line3(t.pos, add(t.pos, mul(t.vel, 5))));
+    const p = point(t.pos);
+    if (p) {
+      g3.strokeStyle = col; g3.lineWidth = 1.5; g3.beginPath();
+      g3.moveTo(p[0], p[1] - 6); g3.lineTo(p[0] + 6, p[1]); g3.lineTo(p[0], p[1] + 6); g3.lineTo(p[0] - 6, p[1]); g3.closePath(); g3.stroke();
+      g3.fillStyle = col; g3.fillText(`${t.name} ${(t.distance / 1000).toFixed(2)}km`, p[0] + 9, p[1] - 6);
+    }
+  }
+  // What the radar reported (with noise).
+  for (const r of world.radars) for (const c of r.contacts) {
+    const p = point(c.world);
+    if (!p) continue;
+    g3.strokeStyle = c.ticks === 0 ? '#ff6b6b' : 'rgba(255,107,107,0.4)'; g3.lineWidth = 1.5; g3.beginPath();
+    g3.moveTo(p[0] - 4, p[1] - 4); g3.lineTo(p[0] + 4, p[1] + 4); g3.moveTo(p[0] + 4, p[1] - 4); g3.lineTo(p[0] - 4, p[1] + 4); g3.stroke();
+    g3.fillStyle = '#ff6b6b'; g3.fillText(String(c.slot), p[0] - 3, p[1] + 16);
+  }
+
+  // Own vehicle: a small aircraft shape, scaled to stay visible.
+  if ($('cam').value !== 'radar') {
+    const s = Math.max(4, camDist * 0.02), m = v.rot;
+    const P = (x, y, z) => add(v.pos, rotApply(m, [x * s, y * s, z * s]));
+    stroke('#4fb6ff', 2, () => {
+      line3(P(0, 0, 1.5), P(0, 0, -1.2)); line3(P(-1.3, 0, -0.2), P(1.3, 0, -0.2));
+      line3(P(-1.3, 0, -0.2), P(0, 0, 0.6)); line3(P(1.3, 0, -0.2), P(0, 0, 0.6));
+      line3(P(-0.5, 0, -1.2), P(0.5, 0, -1.2)); line3(P(0, 0, -1.2), P(0, 0.6, -1.2));
+    });
+    stroke('rgba(79,182,255,0.3)', 1, () => line3(v.pos, [v.pos[0], 0, v.pos[2]]));
+    stroke('rgba(79,182,255,0.5)', 1, () => line3(v.pos, add(v.pos, mul(v.vel, 5))));
+  } else {
+    stroke('rgba(79,182,255,0.5)', 1, () => {
+      g3.moveTo(cam.w / 2 - 8, cam.h / 2); g3.lineTo(cam.w / 2 + 8, cam.h / 2);
+      g3.moveTo(cam.w / 2, cam.h / 2 - 8); g3.lineTo(cam.w / 2, cam.h / 2 + 8);
+    });
+  }
+  const [hd, pt, rl] = v.hpr;
+  g3.fillStyle = '#d8dde6';
+  g3.fillText(`HDG ${hd.toFixed(0).padStart(3, '0')}  PIT ${pt.toFixed(1)}  ROL ${rl.toFixed(1)}  SPD ${v.speed.toFixed(0)} m/s  ALT ${v.pos[1].toFixed(0)} m`, 8, 16);
+  if (world.radars[0]) {
+    const r = world.radars[0];
+    g3.fillText(`radar yaw ${(r.yaw * 360).toFixed(1)}°  pitch ${(r.pitch * 360).toFixed(1)}°  contacts ${r.contacts.filter(c => c.ticks === 0).length}`, 8, 32);
+  }
+}
+
+function renderWorldTables() {
+  const det = new Set(world.radars.flatMap(r => r.contacts.map(c => c.target)));
+  $('tgts').innerHTML = '<tr><th>name</th><th class="num">dist</th><th class="num">alt</th><th class="num">speed</th><th></th></tr>' + world.targets.map(t =>
+    `<tr class="${det.has(t.id) ? 'det' : ''}"><td>${t.name.replace(/</g, '&lt;')}</td><td class="num">${t.distance.toFixed(0)}</td><td class="num">${t.pos[1].toFixed(0)}</td>` +
+    `<td class="num">${Math.hypot(...t.vel).toFixed(0)}</td><td><button data-rm="${t.id}" class="x" style="visibility:visible">✕</button></td></tr>`).join('');
+  $('phys').innerHTML = world.physics.map((x, i) => `<tr><td>${i + 1}</td><td>${PHYS_LABELS[i]}</td><td class="num">${fmt(x)}</td></tr>`).join('');
+  const v = world.vehicle;
+  $('vstat').textContent = `pos ${v.pos.map(x => x.toFixed(0)).join(', ')}`;
+}
+$('tgts').addEventListener('click', (e) => { const id = e.target.dataset.rm; if (id) post('/api/world/target', {action: 'remove', id: Number(id)}); });
+$('addtgt').onclick = () => post('/api/world/target', {action: 'add_ahead', distance: 2000});
+
+async function pollWorld() {
+  try {
+    const r = await fetch('/api/world');
+    const w = await r.json();
+    if (w) {
+      world = w;
+      $('worldsec').style.display = w.empty ? 'none' : '';
+      if (!w.empty) { drawWorld(); renderWorldTables(); }
+    }
+  } catch (e) {}
+  setTimeout(pollWorld, 50);
+}
+
+let drag = null;
+W3.addEventListener('mousedown', (e) => { drag = [e.clientX, e.clientY]; W3.style.cursor = 'grabbing'; });
+window.addEventListener('mouseup', () => { drag = null; W3.style.cursor = 'grab'; });
+window.addEventListener('mousemove', (e) => {
+  if (!drag) return;
+  camYaw += (e.clientX - drag[0]) * 0.008;
+  camPitch = Math.max(-1.5, Math.min(1.5, camPitch + (e.clientY - drag[1]) * 0.008));
+  drag = [e.clientX, e.clientY];
+});
+W3.addEventListener('wheel', (e) => { e.preventDefault(); camDist = Math.max(20, Math.min(50000, camDist * Math.exp(e.deltaY * 0.001))); }, {passive: false});
+$('cam').onchange = () => { if ($('cam').value === 'free' && world) freeFocus = world.vehicle.pos; };
+
+// Keyboard flight: rates apply while keys are held.
+const held = new Set();
+function sendFly() {
+  const rate = (pos, neg, k) => (held.has(pos) ? k : 0) - (held.has(neg) ? k : 0);
+  post('/api/world/fly', {yaw_rate: rate('d', 'a', 25), pitch_rate: rate('arrowup', 'arrowdown', 20), roll_rate: rate('e', 'q', 45)});
+}
+W3.addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === ' ' || k === '.' || k === 'r') e.stopPropagation();
+  if (['w', 's'].includes(k)) {
+    e.preventDefault();
+    post('/api/world/fly', {speed: Math.max(0, (world ? world.vehicle.speed : 0) + (k === 'w' ? 10 : -10))});
+  } else if (k === 'l') {
+    post('/api/world/fly', {level: true});
+  } else if (['a', 'd', 'q', 'e', 'arrowup', 'arrowdown'].includes(k)) {
+    e.preventDefault();
+    if (!held.has(k)) { held.add(k); sendFly(); }
+  }
+});
+W3.addEventListener('keyup', (e) => { const k = e.key.toLowerCase(); if (held.delete(k)) sendFly(); });
+W3.addEventListener('blur', () => { if (held.size) { held.clear(); sendFly(); } });
+pollWorld();
+
 </script>
 </body>
 </html>

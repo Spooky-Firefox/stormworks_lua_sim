@@ -584,7 +584,7 @@ Gain = 1
   "runtime.builtin": { "io": "disable", "os": "disable", "package": "disable", "debug": "disable", "coroutine": "disable", "utf8": "disable" },
   "workspace.library": [".swlua"],
   "workspace.ignoreDir": ["out"],
-  "diagnostics.globals": ["sim", "onSimInit", "onSimTick", "onSimAfterTick"]
+  "diagnostics.globals": ["sim", "world", "onSimInit", "onSimTick", "onSimAfterTick"]
 }
 "#,
         )?;

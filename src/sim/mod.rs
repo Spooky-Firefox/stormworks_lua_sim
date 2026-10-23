@@ -3,6 +3,8 @@
 
 pub mod font;
 pub mod screen;
+pub mod world;
+mod world_lua;
 
 use anyhow::{Context, Result, anyhow};
 use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, Variadic, VmState};
@@ -54,6 +56,8 @@ pub struct State {
     pub logs: Vec<String>,
     pub http_requests: Vec<(u16, String)>,
     pub stop_requested: bool,
+    /// Simulated surroundings (vehicle, targets, radars) set up by the bench.
+    pub world: world::World,
     callback_start: Option<Instant>,
 }
 
@@ -147,6 +151,7 @@ impl Sim {
             logs: Vec::new(),
             http_requests: Vec::new(),
             stop_requested: false,
+            world: world::World::default(),
             callback_start: None,
         }));
         let (http_tx, http_rx) = channel();
@@ -663,7 +668,17 @@ impl Sim {
             let (w, h) = s.screen.as_ref().map_or((0, 0), |s| (s.w, s.h));
             Ok(Value::Table(lua.create_sequence_from([w, h])?))
         });
+        func!("getTouch", |lua, a| |s: &mut State| {
+            // getTouch([which]) -> x, y, down as a table {x, y, down}
+            let t = s.touch[if num(&a, 0) >= 2.0 { 1 } else { 0 }];
+            let r = lua.create_table()?;
+            r.set("x", t.x)?;
+            r.set("y", t.y)?;
+            r.set("down", t.down)?;
+            Ok(Value::Table(r))
+        });
         bench.globals().set("sim", api)?;
+        world_lua::install(&bench, self.st.clone())?;
         let code = std::fs::read_to_string(path)
             .map_err(|e| mlua::Error::runtime(format!("reading {}: {e}", path.display())))?;
         bench
@@ -747,6 +762,11 @@ impl Sim {
                 .map_err(|e| e.to_string())?;
         }
         self.call_script("onTick", ()).map_err(|e| e.to_string())?;
+        {
+            let mut s = self.st.borrow_mut();
+            let s = &mut *s;
+            s.world.step(&s.out_num);
+        }
         self.draw()?;
         self.call_bench("onSimAfterTick", self.tick)
             .map_err(|e| format!("bench onSimAfterTick: {e}"))?;
@@ -922,5 +942,65 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sim.take_logs(), vec!["1.0"]);
+    }
+
+    #[test]
+    fn bench_world_drives_radar_and_physics() {
+        let dir = std::env::temp_dir().join(format!("swlua_world_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bench = dir.join("bench.lua");
+        std::fs::write(
+            &bench,
+            r#"
+            function onSimInit(sim)
+                world.setVehicle{pos = {0, 100, 0}, heading = 90, speed = 60}
+                radar = world.addRadar{fov_x = 0.1, fov_y = 0.1, range = 3000, noise = 0, yaw_output = 1}
+                world.addTarget{name = "east", pos = {1000, 100, 0}}
+            end
+            function onSimTick(sim, tick)
+                world.writeRadar(radar, 1, 1)
+                world.writePhysics(9)
+            end
+            "#,
+        )
+        .unwrap();
+        let code = r#"
+            function onTick()
+                output.setNumber(1, 0)
+                output.setNumber(2, input.getNumber(1))
+                output.setBool(1, input.getBool(1))
+                output.setNumber(3, input.getNumber(26)) -- physics compass
+            end
+        "#;
+        let mut o = opts();
+        o.bench = Some(bench);
+        let mut sim = Sim::new(
+            Source::Code {
+                name: "t".into(),
+                code: code.into(),
+            },
+            o,
+        )
+        .unwrap();
+        for _ in 0..3 {
+            sim.step().unwrap();
+        }
+        let s = sim.st.borrow();
+        assert!(
+            s.out_bool[0],
+            "target due east is in the beam of a vehicle heading east"
+        );
+        assert!(
+            (s.out_num[1] - (1000.0 - 60.0 * 2.0 / 60.0)).abs() < 1.0,
+            "distance {}",
+            s.out_num[1]
+        );
+        assert!(
+            (s.out_num[2] + 0.25).abs() < 1e-9,
+            "compass east = -0.25, got {}",
+            s.out_num[2]
+        );
+        drop(s);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

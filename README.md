@@ -126,6 +126,65 @@ The full bench API is `setNumber`, `setBool`, `getNumber`, `getBool`, `getOutput
 
 A failing `assert` in the bench makes `swlua run` exit with a non-zero code. That lets a bench work as an automated test, for example in CI.
 
+### 3D world: radar, physics sensor and targets
+
+The bench can also build a small 3D world: your vehicle, moving targets, radars on pivots, and a physics sensor. The bench then passes the sensor readings into whatever input channels your vehicle uses. That makes it possible to develop a radar display or tracker without the game. When a world exists, `swlua sim` shows it in a **3D view** with these features:
+
+- **Camera**: orbit around the vehicle, or look through the radar.
+- **Beam**: the radar's beam is drawn as a wireframe.
+- **Targets**: drawn with velocity vectors, trails and altitude lines. Targets the radar currently sees turn green.
+- **Reported contacts**: red crosses mark the positions the radar reports, noise included, so you can compare them with the true positions.
+- **Flying**: click the view, then use W/S for speed, A/D for yaw, ↑/↓ for pitch, Q/E for roll and L to level out.
+- **Tables**: live target and physics sensor tables, and a button that adds a target ahead of you.
+
+```lua
+function onSimInit(sim)
+    world.setVehicle{pos = {0, 300, 0}, heading = 0, speed = 90}   -- flies along its nose
+    radar = world.addRadar{fov_x = 0.02, fov_y = 0.02, range = 6000, noise = 0.005,
+                           yaw_output = 1, pitch_output = 2, slew = 1}
+    world.addTarget{name = "bandit", pos = {400, 450, 3500}, vel = {-15, 0, -80}}
+    world.addTarget{name = "circler", pos = {-1500, 600, 2500}, vel = {0, 0, 70}, turn_rate = 6}
+end
+
+function onSimTick(sim, tick)
+    -- Wire sensors to inputs however your vehicle does, e.g. alternating ticks:
+    if tick % 2 == 0 then
+        world.writeRadar(radar, 1, 1)   -- numbers 1-32 + bools 1-8
+        sim:setBool(9, false)
+    else
+        world.writePhysics(1)           -- numbers 1-18
+        sim:setBool(9, true)
+    end
+end
+```
+
+| Function | |
+| --- | --- |
+| `world.setVehicle{...}` / `world.getVehicle()` | Body fields: `pos`, `heading`/`pitch`/`roll` (degrees) or `euler`, `speed` (m/s along the nose) or `vel` (world m/s), `yaw_rate`/`pitch_rate`/`roll_rate` (deg/s) |
+| `world.addTarget{name=..., ...}` → id | Same body fields. `turn_rate` (deg/s) flies a circle |
+| `world.setTarget(id, {...})`, `world.removeTarget(id)`, `world.getTargets()` | |
+| `world.addRadar{...}` → id | Radar fields: `fov_x`, `fov_y` (turns, full width), `range`, `noise` (position error σ as a fraction of distance), `yaw_output`/`pitch_output` (script outputs that drive the pivot, in turns), `slew` (turns/s), `hold_ticks`, `offset` (mount position) |
+| `world.aimRadar(id, yaw, pitch)` | Point a radar that has no output channels |
+| `world.getRadar(id)` | Returns `{yaw, pitch, contacts = {{slot, target, distance, azimuth, elevation, ticks}}}` |
+| `world.writeRadar(id, num_start, bool_start)` | Radar composite. Each of 8 slots gets 4 numbers (distance, azimuth, elevation, ticks since detection) and 1 detected bool. Angles are in turns, relative to the radar's facing |
+| `world.physics()` / `world.writePhysics(num_start)` | The 18 physics sensor numbers: position, Euler angles, local velocity, angular velocity, absolute speeds, tilts and compass |
+
+Conventions:
+
+- **World axes**: X is east, Y is up and Z is north, matching the physics sensor.
+- **Vehicle axes**: X is right, Y is up and Z is forward.
+- **Euler angles**: `R = Rz·Ry·Rx`, local to world.
+- **Radar angles**: positive azimuth is right and positive elevation is up.
+- **Compass**: 0 is north, east is −0.25.
+- **Pivot**: positive yaw turns right.
+- **Random numbers**: radar noise is seeded, so runs repeat exactly.
+
+[`examples/stormworks-hud/bench.lua`](examples/stormworks-hud/bench.lua) wires up the channel layout of [stormworks-HUD](https://github.com/Spooky-Firefox/stormworks-HUD):
+
+```sh
+swlua sim ../stormworks-HUD/main.lua -b examples/stormworks-hud/bench.lua -s 3x3 --no-touch
+```
+
 ## swlua.toml
 
 ```toml
@@ -165,6 +224,8 @@ Callsign = "ALPHA"
 - `drawMap` has no terrain data.
 - The map projection uses a scale of `zoom * 1000 / screen width` metres per pixel.
 - `onDraw` runs once per tick for a single monitor.
+- The world simulation is kinematic, with no flight physics and no terrain. Nothing blocks line of sight for radars.
+- I wrote the physics sensor and radar conventions from memory of how the game works, and haven't measured them in game. Compare `world.physics()` with a real physics sensor before relying on the signs, especially Euler angles, local velocity and compass direction.
 
 ## Development
 
@@ -181,5 +242,5 @@ The code is organised like this:
 | `src/minify/` | scope resolver, renamer, hoisting, printer |
 | `src/bundle.rs` | `require` inlining |
 | `src/check.rs` | linter |
-| `src/sim/` | simulator and rasteriser |
+| `src/sim/` | simulator, rasteriser, 3D world (`world.rs`) and its bench API (`world_lua.rs`) |
 | `src/server.rs` and `web/index.html` | debugger |

@@ -1,6 +1,7 @@
 //! `swlua sim`: a browser-based debugger. The simulator and the HTTP server
 //! share one thread, so the Lua state never crosses threads.
 
+use crate::sim::world::{Body, M3, Target, V3, World, v3};
 use crate::sim::{PropValue, Sim, Touch};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
@@ -55,6 +56,94 @@ struct ControlReq {
     action: String,
     #[serde(default)]
     value: f64,
+}
+
+/// Flight controls from the 3D view; rates in degrees per second.
+#[derive(Deserialize)]
+struct FlyReq {
+    speed: Option<f64>,
+    yaw_rate: Option<f64>,
+    pitch_rate: Option<f64>,
+    roll_rate: Option<f64>,
+    /// Snap back to level flight on the current heading.
+    #[serde(default)]
+    level: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum TargetReq {
+    /// Adds a target ahead of the vehicle, flying across its path.
+    AddAhead {
+        distance: f64,
+    },
+    Remove {
+        id: u32,
+    },
+}
+
+fn v(p: V3) -> Json {
+    json!([p.x, p.y, p.z])
+}
+
+fn rot(m: &M3) -> Json {
+    json!(m.0.iter().flatten().collect::<Vec<_>>())
+}
+
+fn world_json(w: &World) -> Json {
+    let (h, p, r) = w.vehicle_hpr();
+    let detected: std::collections::HashSet<u32> = w
+        .radars
+        .iter()
+        .flat_map(|r| {
+            r.slots
+                .iter()
+                .flatten()
+                .filter(|c| c.ticks_since == 0)
+                .map(|c| c.target)
+        })
+        .collect();
+    json!({
+        "vehicle": {
+            "pos": v(w.vehicle.pos),
+            "rot": rot(&w.vehicle.rot),
+            "vel": v(w.vehicle.velocity()),
+            "speed": w.vehicle.velocity().len(),
+            "hpr": [h, p, r],
+            "ang_vel": v(w.vehicle.ang_vel),
+        },
+        "targets": w.targets.iter().map(|t| json!({
+            "id": t.id,
+            "name": t.name,
+            "pos": v(t.body.pos),
+            "vel": v(t.body.velocity()),
+            "trail": t.trail.iter().map(|p| v(*p)).collect::<Vec<_>>(),
+            "detected": detected.contains(&t.id),
+            "distance": t.body.pos.sub(w.vehicle.pos).len(),
+        })).collect::<Vec<_>>(),
+        "radars": w.radars.iter().map(|r| json!({
+            "id": r.id,
+            "name": r.name,
+            "pos": v(r.position(&w.vehicle)),
+            "rot": rot(&r.rotation(&w.vehicle.rot)),
+            "fov_x": r.fov_x,
+            "fov_y": r.fov_y,
+            "range": r.range,
+            "yaw": r.yaw,
+            "pitch": r.pitch,
+            "contacts": r.slots.iter().enumerate().filter_map(|(i, c)| c.as_ref().map(|c| json!({
+                "slot": i + 1,
+                "target": c.target,
+                "distance": c.distance,
+                "azimuth": c.azimuth,
+                "elevation": c.elevation,
+                "ticks": c.ticks_since,
+                "world": v(c.world_pos),
+            }))).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "physics": w.physics().to_vec(),
+        "empty": w.is_empty(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -301,6 +390,75 @@ impl App {
                 };
                 sim.st.borrow_mut().props.insert(r.name.clone(), v.clone());
                 app.ui_props.insert(r.name, v);
+                Ok(())
+            }),
+            (Method::Get, "/api/world") => match &self.sim {
+                Some(sim) => json_resp(&world_json(&sim.st.borrow().world)),
+                None => json_resp(&Json::Null),
+            },
+            (Method::Post, "/api/world/fly") => self.post(&body, |app, r: FlyReq| {
+                let sim = app
+                    .sim
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("no script loaded"))?;
+                let mut st = sim.st.borrow_mut();
+                let b = &mut st.world.vehicle;
+                if let Some(s) = r.speed {
+                    b.speed = Some(s.max(0.0));
+                }
+                if let Some(y) = r.yaw_rate {
+                    b.ang_vel.y = y.to_radians();
+                }
+                if let Some(p) = r.pitch_rate {
+                    b.ang_vel.x = -p.to_radians();
+                }
+                if let Some(rr) = r.roll_rate {
+                    b.ang_vel.z = -rr.to_radians();
+                }
+                if r.level {
+                    let f = b.rot.forward();
+                    b.rot = M3::from_hpr(f.x.atan2(f.z), 0.0, 0.0);
+                    b.ang_vel = V3::default();
+                }
+                Ok(())
+            }),
+            (Method::Post, "/api/world/target") => self.post(&body, |app, r: TargetReq| {
+                let sim = app
+                    .sim
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("no script loaded"))?;
+                let mut st = sim.st.borrow_mut();
+                let w = &mut st.world;
+                match r {
+                    TargetReq::AddAhead { distance } => {
+                        let id = w.new_id();
+                        let f = w.vehicle.rot.forward();
+                        let flat = v3(f.x, 0.0, f.z);
+                        let flat = if flat.len() < 1e-6 {
+                            v3(0.0, 0.0, 1.0)
+                        } else {
+                            flat.scale(1.0 / flat.len())
+                        };
+                        let right = v3(flat.z, 0.0, -flat.x);
+                        let pos = w
+                            .vehicle
+                            .pos
+                            .add(flat.scale(distance))
+                            .add(right.scale(-distance * 0.2));
+                        let body = Body {
+                            pos,
+                            vel: right.scale(40.0),
+                            ..Default::default()
+                        };
+                        w.targets.push(Target {
+                            id,
+                            name: format!("target {id}"),
+                            body,
+                            trail: vec![],
+                        });
+                    }
+                    TargetReq::Remove { id } => w.targets.retain(|t| t.id != id),
+                }
                 Ok(())
             }),
             (Method::Post, "/api/control") => self.post(&body, |app, r: ControlReq| {
