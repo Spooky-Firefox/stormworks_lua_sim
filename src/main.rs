@@ -85,8 +85,15 @@ enum Cmd {
     Sim {
         #[command(flatten)]
         sim: SimArgs,
-        #[arg(long, default_value = "127.0.0.1:7272")]
-        listen: String,
+        /// Listen on all network interfaces instead of only this machine,
+        /// e.g. to open the debugger from another computer (prints the URLs).
+        #[arg(long)]
+        lan: bool,
+        #[arg(long, default_value_t = 7272)]
+        port: u16,
+        /// Exact address to listen on, e.g. 192.168.1.20:8000 (overrides --lan/--port).
+        #[arg(long)]
+        listen: Option<String>,
         /// Start paused.
         #[arg(long)]
         paused: bool,
@@ -309,10 +316,16 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Sim {
             sim,
+            lan,
+            port,
             listen,
             paused,
         } => {
             let (factory, tick_rate, watch) = sim_factory(&sim, cfg.as_ref())?;
+            let listen = listen.unwrap_or_else(|| {
+                let host = if lan { "0.0.0.0" } else { "127.0.0.1" };
+                format!("{host}:{port}")
+            });
             server::serve(factory, watch, &listen, tick_rate, paused)
         }
     }

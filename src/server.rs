@@ -518,6 +518,41 @@ fn json_resp(v: &Json) -> tiny_http::ResponseBox {
         .boxed()
 }
 
+/// Prints where the debugger can be opened. When listening on all
+/// interfaces, lists this machine's address on each network.
+fn print_urls(server: &Server) {
+    let Some(addr) = server.server_addr().to_ip() else {
+        return;
+    };
+    let port = addr.port();
+    if !addr.ip().is_unspecified() {
+        eprintln!("swlua debugger running at http://{addr}  (Ctrl+C to quit)");
+        return;
+    }
+    eprintln!("swlua debugger listening on all interfaces, port {port}  (Ctrl+C to quit)");
+    let mut found = false;
+    for iface in if_addrs::get_if_addrs().unwrap_or_default() {
+        if let if_addrs::IfAddr::V4(v4) = &iface.addr {
+            if v4.ip.is_loopback() || v4.ip.is_link_local() {
+                continue;
+            }
+            let net = std::net::Ipv4Addr::from(v4.ip.to_bits() & v4.netmask.to_bits());
+            eprintln!(
+                "  http://{}:{port}   ({}, subnet {net}/{})",
+                v4.ip, iface.name, v4.prefixlen
+            );
+            found = true;
+        }
+    }
+    if !found {
+        eprintln!("  no network address found; try http://<this machine's IP>:{port}");
+    }
+    eprintln!("  also http://127.0.0.1:{port} on this machine");
+    eprintln!(
+        "  note: there is no login; anyone who can reach this port can control the simulator"
+    );
+}
+
 pub fn serve(
     factory: Factory,
     watch: Vec<PathBuf>,
@@ -526,7 +561,7 @@ pub fn serve(
     start_paused: bool,
 ) -> Result<()> {
     let server = Server::http(addr).map_err(|e| anyhow!("cannot listen on {addr}: {e}"))?;
-    eprintln!("swlua debugger running at http://{addr}  (Ctrl+C to quit)");
+    print_urls(&server);
     let mut app = App {
         factory,
         sim: None,

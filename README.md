@@ -46,7 +46,7 @@ bench.lua           test bench that drives inputs in the simulator
 | `swlua minify <file\|-> [-o file]` | Minify any file without a project (requires are still bundled) |
 | `swlua check [file]` | Lint the script and report its minified size |
 | `swlua run [file] -t 600 [--csv out.csv] [--screenshot f.png] [-p]` | Headless simulation |
-| `swlua sim [file] [--listen addr] [--paused]` | Browser debugger |
+| `swlua sim [file] [--lan] [--port 7272] [--listen addr] [--paused]` | Browser debugger |
 
 `run` and `sim` share these options: `--screen 3x2|96x64`, `--bench bench.lua`, `--prop "Max Speed=12"`, `--no-touch`, and `-m/--minified`. With `--minified` the simulator runs the bundled and minified output instead of your source, which checks that the build behaves the same.
 
@@ -95,6 +95,17 @@ The simulator provides the whole microcontroller API:
   | bool 1–2 | touch 1 and 2 pressed |
 
 ### Browser debugger (`swlua sim`)
+
+By default the debugger only accepts connections from the same machine, at http://127.0.0.1:7272. If your code lives on another computer, for example a server you edit over SSH, run `swlua sim --lan`. It then listens on every network interface and prints the URL for each network, for example:
+
+```
+swlua debugger listening on all interfaces, port 7272  (Ctrl+C to quit)
+  http://192.168.1.23:7272   (eth0, subnet 192.168.1.0/24)
+```
+
+Open that URL from any machine on the same network. The debugger has no login, so only use `--lan` on networks you trust. `--port` changes the port, and `--listen 192.168.1.23:8000` binds one exact address.
+
+VS Code Remote-SSH can also forward the default port for you, with no flag needed: open the Ports panel and forward 7272.
 
 - **Monitor**: shows the screen at an adjustable zoom. Left click is touch 1 and right click is touch 2.
 - **Run control**: run, pause, single-step (`.`), and reload (`r`). Speed goes from 0.1× to 10×.
