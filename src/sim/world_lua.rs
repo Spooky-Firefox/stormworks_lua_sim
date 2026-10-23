@@ -176,6 +176,15 @@ pub fn install(lua: &Lua, st: Rc<RefCell<State>>) -> mlua::Result<()> {
             pitch_target: 0.0,
             slew: t.get("slew")?,
             hold_ticks: t.get::<Option<u64>>("hold_ticks")?.unwrap_or(0),
+            vehicle_angles: match t.get::<Option<String>>("angles")?.as_deref() {
+                None | Some("vehicle") => true,
+                Some("radar") => false,
+                Some(other) => {
+                    return Err(mlua::Error::runtime(format!(
+                        "addRadar: angles must be \"vehicle\" or \"radar\", got {other:?}"
+                    )));
+                }
+            },
             slots: Default::default(),
         };
         world.radars.push(radar);

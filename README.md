@@ -196,10 +196,10 @@ end
 | `world.setVehicle{...}` / `world.getVehicle()` | Body fields: `pos`, `heading`/`pitch`/`roll` (degrees) or `euler`, `speed` (m/s along the nose) or `vel` (world m/s), `yaw_rate`/`pitch_rate`/`roll_rate` (deg/s) |
 | `world.addTarget{name=..., ...}` → id | Same body fields. `turn_rate` (deg/s) flies a circle |
 | `world.setTarget(id, {...})`, `world.removeTarget(id)`, `world.getTargets()` | |
-| `world.addRadar{...}` → id | Radar fields: `fov_x`, `fov_y` (turns, full width), `range`, `noise` (position error σ as a fraction of distance), `yaw_output`/`pitch_output` (script outputs that drive the pivot, in turns), `slew` (turns/s), `hold_ticks`, `offset` (mount position) |
+| `world.addRadar{...}` → id | Radar fields: `fov_x`, `fov_y` (turns, full width), `range`, `noise` (position error σ as a fraction of distance), `yaw_output`/`pitch_output` (script outputs that drive the pivot, in turns), `slew` (turns/s), `hold_ticks`, `offset` (mount position), `angles` (`"vehicle"`, the default, or `"radar"`: the frame contact angles are reported in) |
 | `world.aimRadar(id, yaw, pitch)` | Point a radar that has no output channels |
 | `world.getRadar(id)` | Returns `{yaw, pitch, contacts = {{slot, target, distance, azimuth, elevation, ticks}}}` |
-| `world.writeRadar(id, num_start, bool_start)` | Radar composite. Each of 8 slots gets 4 numbers (distance, azimuth, elevation, ticks since detection) and 1 detected bool. Angles are in turns, relative to the radar's facing |
+| `world.writeRadar(id, num_start, bool_start)` | Radar composite. Each of 8 slots gets 4 numbers (distance, azimuth, elevation, ticks since detection) and 1 detected bool. Angles are in turns, relative to the vehicle unless the radar was added with `angles = "radar"` |
 | `world.radarValues(id)` | The same values as `writeRadar`, returned as two tables, for passing to a controller |
 | `world.toLocal(pos)` | A world position in the vehicle frame (x right, y up, z forward) |
 | `world.physics()` / `world.writePhysics(num_start)` | The 17 physics sensor numbers: position (1-3), Euler angles (4-6), local velocity (7-9), angular velocity (10-12), absolute speeds (13-14), local Z (forward) and X (right) tilt (15-16) and compass (17) |
@@ -210,7 +210,7 @@ Conventions:
 - **Vehicle axes**: X is right, Y is up and Z is forward.
 - **Euler angles**: extrinsic rotations about world X, then Y, then Z, so `R = Rz·Ry·Rx` maps local to world. This matches the game as measured in the Steam guide [How to use the euler x, euler y and euler z outputs of Physics and Astronomy Sensors](https://steamcommunity.com/sharedfiles/filedetails/?id=3302971632); a unit test checks the simulator against the guide's `ijkfromeuler`.
 - **Angular velocity** (physics 10-12) is about the world axes, as in the game, not the vehicle's own axes.
-- **Radar angles**: positive azimuth is right and positive elevation is up.
+- **Radar angles**: positive azimuth is right and positive elevation is up. By default (`angles = "vehicle"`) they are relative to the vehicle, not to the pivoted radar: in game, a radar on a pivot yawed 45° reports a target in its beam centre at 45°. `angles = "radar"` reports them relative to the radar's facing instead.
 - **Compass**: 0 is north, east is −0.25.
 - **Pivot**: positive yaw turns right.
 - **Random numbers**: radar noise is seeded, so runs repeat exactly.

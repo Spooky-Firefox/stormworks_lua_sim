@@ -233,6 +233,10 @@ pub struct Radar {
     pub slew: Option<f64>,
     /// Contacts stay in their slot this many ticks after leaving the beam.
     pub hold_ticks: u64,
+    /// Report contact angles relative to the vehicle instead of the radar's
+    /// pivoted facing. In game, a radar on a 45 deg yawed pivot reports a
+    /// target in its beam centre at 45 deg, so this is the default.
+    pub vehicle_angles: bool,
     pub slots: [Option<Contact>; RADAR_SLOTS],
 }
 
@@ -335,11 +339,13 @@ impl World {
     }
 
     fn scan(&mut self, i: usize) {
-        let (pos, rot_t) = {
+        let (pos, rot_t, pivot) = {
             let r = &self.radars[i];
             (
                 r.position(&self.vehicle),
                 r.rotation(&self.vehicle.rot).transpose(),
+                // Radar-to-vehicle rotation, when angles are vehicle-relative.
+                r.vehicle_angles.then(|| r.rotation(&M3::IDENTITY)),
             )
         };
         let mut seen: HashMap<u32, Contact> = HashMap::new();
@@ -362,14 +368,14 @@ impl World {
             let sigma = r.noise * dist;
             let noisy = local.add(v3(self.gauss(), self.gauss(), self.gauss()).scale(sigma));
             let nd = noisy.len();
+            // Angles in the reporting frame: the radar's facing, or the
+            // vehicle's (undoing the pivot).
+            let rep = pivot.map_or(noisy, |m| m.apply(noisy));
             let c = Contact {
                 target: id,
                 distance: nd,
-                azimuth: noisy.x.atan2(noisy.z) / TAU,
-                elevation: noisy
-                    .y
-                    .atan2((noisy.x * noisy.x + noisy.z * noisy.z).sqrt())
-                    / TAU,
+                azimuth: rep.x.atan2(rep.z) / TAU,
+                elevation: rep.y.atan2((rep.x * rep.x + rep.z * rep.z).sqrt()) / TAU,
                 ticks_since: 0,
                 world_pos: pos.add(rot_t.transpose().apply(noisy)),
             };
@@ -547,6 +553,7 @@ mod tests {
             pitch_target: 0.0,
             slew: None,
             hold_ticks: 0,
+            vehicle_angles: false,
             slots: Default::default(),
         });
         w.step(&[0.0]);
@@ -560,6 +567,54 @@ mod tests {
         // Turning the pivot away loses the target.
         w.step(&[0.25]);
         assert!(!w.radar_composite(rid).unwrap().1[0]);
+    }
+
+    /// A radar on a pivot yawed 45 deg sees a target at 45 deg in its beam
+    /// centre; the game reports that as azimuth 45 deg (vehicle-relative).
+    #[test]
+    fn radar_angle_frames() {
+        for (vehicle_angles, expected) in [(true, 0.125), (false, 0.0)] {
+            let mut w = World::default();
+            let id = w.new_id();
+            let d = 1000.0 / 2f64.sqrt();
+            w.targets.push(Target {
+                id,
+                name: "t".into(),
+                body: Body {
+                    pos: v3(d, 0.0, d),
+                    ..Default::default()
+                },
+                trail: vec![],
+            });
+            let rid = w.new_id();
+            w.radars.push(Radar {
+                id: rid,
+                name: "r".into(),
+                offset: V3::default(),
+                fov_x: 0.05,
+                fov_y: 0.05,
+                range: 5000.0,
+                noise: 0.0,
+                yaw_output: Some(1),
+                pitch_output: None,
+                yaw: 0.0,
+                pitch: 0.0,
+                yaw_target: 0.0,
+                pitch_target: 0.0,
+                slew: None,
+                hold_ticks: 0,
+                slots: Default::default(),
+                vehicle_angles,
+            });
+            w.step(&[0.125]);
+            let (n, b) = w.radar_composite(rid).unwrap();
+            assert!(b[0], "target in the beam");
+            assert!(
+                close(n[1], expected),
+                "vehicle_angles {vehicle_angles}: azimuth {}",
+                n[1]
+            );
+        }
     }
 
     #[test]
