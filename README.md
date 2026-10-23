@@ -208,7 +208,8 @@ Conventions:
 
 - **World axes**: X is east, Y is up and Z is north, matching the physics sensor.
 - **Vehicle axes**: X is right, Y is up and Z is forward.
-- **Euler angles**: `R = Rz·Ry·Rx`, local to world.
+- **Euler angles**: extrinsic rotations about world X, then Y, then Z, so `R = Rz·Ry·Rx` maps local to world. This matches the game as measured in the Steam guide [How to use the euler x, euler y and euler z outputs of Physics and Astronomy Sensors](https://steamcommunity.com/sharedfiles/filedetails/?id=3302971632); a unit test checks the simulator against the guide's `ijkfromeuler`.
+- **Angular velocity** (physics 10-12) is about the world axes, as in the game, not the vehicle's own axes.
 - **Radar angles**: positive azimuth is right and positive elevation is up.
 - **Compass**: 0 is north, east is −0.25.
 - **Pivot**: positive yaw turns right.
@@ -261,7 +262,7 @@ Callsign = "ALPHA"
 - The map projection uses a scale of `zoom * 1000 / screen width` metres per pixel.
 - `onDraw` runs once per tick for a single monitor.
 - The world simulation is kinematic, with no flight physics and no terrain. Nothing blocks line of sight for radars.
-- I wrote the physics sensor and radar conventions from memory of how the game works, and haven't measured them in game. Compare `world.physics()` with a real physics sensor before relying on the signs, especially Euler angles, local velocity and compass direction.
+- I wrote the physics sensor and radar conventions from memory of how the game works, and haven't measured them in game. The Euler angle convention and the world-frame angular velocity follow the guide linked above. Linear velocity (7-9) is assumed to be in the vehicle's own axes, and the compass to read -0.25 facing east; check those against a real physics sensor.
 
 ## Development
 

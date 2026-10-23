@@ -4,7 +4,10 @@
 //! Coordinates follow the game's physics sensor: X = east, Y = up,
 //! Z = north. Vehicle-local axes are X = right, Y = up, Z = forward.
 //! Orientation is stored as a local-to-world rotation matrix; Euler angles
-//! use R = Rz(z) * Ry(y) * Rx(x).
+//! use R = Rz(z) * Ry(y) * Rx(x), i.e. extrinsic rotations about the world
+//! X, then Y, then Z axis. That is the physics sensor's convention as
+//! measured in the Steam guide "How to use the euler x, euler y and euler z
+//! outputs of Physics and Astronomy Sensors".
 
 use std::collections::HashMap;
 use std::f64::consts::TAU;
@@ -421,7 +424,9 @@ impl World {
         let e = v.rot.to_euler();
         let vel = v.velocity();
         let local_vel = v.rot.transpose().apply(vel);
-        let w = v.ang_vel;
+        // The sensor reports angular velocity about the world axes, not the
+        // vehicle's own (see the guide above).
+        let w = v.rot.apply(v.ang_vel);
         let tilt = |axis: V3| axis.y.clamp(-1.0, 1.0).asin() / TAU;
         let f = v.rot.forward();
         [
@@ -468,6 +473,21 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
+    }
+
+    /// The basis vectors from the community guide's `ijkfromeuler`, which was
+    /// checked against the game, must match our rotation's local axes.
+    #[test]
+    fn euler_matches_game_convention() {
+        let (ex, ey, ez): (f64, f64, f64) = (0.4, -1.1, 2.3);
+        let (cx, sx, cy, sy, cz, sz) = (ex.cos(), ex.sin(), ey.cos(), ey.sin(), ez.cos(), ez.sin());
+        let i = v3(cy * cz, cy * sz, -sy);
+        let j = v3(sx * sy * cz - cx * sz, sx * sy * sz + cx * cz, sx * cy);
+        let k = v3(cx * sy * cz + sx * sz, cx * sy * sz - sx * cz, cx * cy);
+        let m = M3::from_euler(ex, ey, ez);
+        for (a, b) in [(i, m.right()), (j, m.up()), (k, m.forward())] {
+            assert!(a.sub(b).len() < 1e-12, "{a:?} vs {b:?}");
+        }
     }
 
     #[test]

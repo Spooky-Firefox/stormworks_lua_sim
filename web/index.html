@@ -280,7 +280,7 @@ pollFrame();
 const W3 = $('world3d'), g3 = W3.getContext('2d');
 let world = null, camYaw = -0.6, camPitch = 0.35, camDist = 1500, freeFocus = null;
 const PHYS_LABELS = ['pos x', 'pos y (alt)', 'pos z', 'euler x', 'euler y', 'euler z', 'vel x (local)', 'vel y (local)', 'vel z (local)',
-  'ang vel x', 'ang vel y', 'ang vel z', 'abs vel', 'abs ang vel', 'tilt fwd (z)', 'tilt right (x)', 'compass'];
+  'ang vel x (world)', 'ang vel y (world)', 'ang vel z (world)', 'abs vel', 'abs ang vel', 'tilt fwd (z)', 'tilt right (x)', 'compass'];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
