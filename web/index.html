@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>swlua debugger</title>
+<style>
+  :root {
+    --bg: #14171c; --panel: #1c2027; --line: #2b313b; --text: #d8dde6; --dim: #8a93a3;
+    --accent: #4fb6ff; --on: #46c47e; --warn: #f0b44c; --err: #ff6b6b; --held: #3a3220;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 14px; margin: 0 12px 0 0; color: var(--accent); }
+  button, select, input { font: inherit; color: var(--text); background: #262b34; border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; }
+  button:hover { border-color: var(--accent); cursor: pointer; }
+  .stat { color: var(--dim); }
+  .stat b { color: var(--text); font-weight: normal; }
+  main { display: grid; grid-template-columns: minmax(300px, auto) 1fr; gap: 12px; padding: 12px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin-bottom: 12px; min-width: 0; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
+  #screenwrap { position: relative; display: inline-block; line-height: 0; border: 1px solid var(--line); }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; cursor: crosshair; background: #000; }
+  #coords { color: var(--dim); margin-top: 6px; min-height: 1.4em; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 1px 4px; text-align: left; white-space: nowrap; }
+  th { color: var(--dim); font-weight: normal; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 3px 10px; }
+  .ch { display: flex; align-items: center; gap: 4px; padding: 1px 3px; border-radius: 3px; }
+  .ch.held { background: var(--held); }
+  .ch label { color: var(--dim); width: 22px; text-align: right; }
+  .ch input[type=number] { width: 80px; padding: 1px 4px; }
+  .ch .val { min-width: 70px; }
+  .ch .x { padding: 0 4px; font-size: 11px; visibility: hidden; }
+  .ch.held .x { visibility: visible; }
+  .led { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #333a45; vertical-align: middle; }
+  .led.on { background: var(--on); box-shadow: 0 0 6px var(--on); }
+  .nz { color: var(--text); } .z { color: #59606d; }
+  #log { height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #101318; padding: 6px; border-radius: 4px; }
+  #log .e { color: var(--err); } #log .s { color: var(--accent); } #log .b { color: var(--warn); }
+  #error { display: none; color: var(--err); white-space: pre-wrap; border-color: var(--err); }
+  .props input { width: 120px; }
+  .hint { color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>swlua</h1>
+  <button id="play">⏸ Pause</button>
+  <button id="step" title="Advance one tick">Step</button>
+  <button id="reset" title="Reload the script and restart (inputs kept)">Reload</button>
+  <label class="stat">speed
+    <select id="speed"><option>0.1</option><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>10</option></select>
+  </label>
+  <label class="stat"><input type="checkbox" id="autoreload" checked> reload on save</label>
+  <label class="stat">zoom <select id="zoom"><option>2</option><option>3</option><option selected>4</option><option>6</option><option>8</option></select></label>
+  <span class="stat">tick <b id="tick">0</b></span>
+  <span class="stat">tps <b id="tps">0</b></span>
+  <a class="stat" href="/api/screenshot.png" target="_blank">screenshot</a>
+</header>
+<main>
+  <div>
+    <section id="error"></section>
+    <section id="screensec">
+      <h2>Monitor <span id="screensize" class="hint"></span></h2>
+      <div id="screenwrap"><canvas id="screen" width="32" height="32"></canvas></div>
+      <div id="coords"></div>
+      <div class="hint">Left click = touch 1, right click = touch 2 (when touch is enabled)</div>
+    </section>
+    <section>
+      <h2>Log</h2>
+      <div id="log"></div>
+      <button id="clearlog" style="margin-top:6px">Clear</button>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>Outputs</h2>
+      <div class="grid" id="outnum"></div>
+      <div class="grid" id="outbool" style="margin-top:6px"></div>
+    </section>
+    <section>
+      <h2>Inputs <span class="hint">— type a value or click a light to hold it; ✕ releases it back to the bench/config</span></h2>
+      <div class="grid" id="innum"></div>
+      <div class="grid" id="inbool" style="margin-top:6px"></div>
+    </section>
+    <section class="props">
+      <h2>Properties</h2>
+      <table id="props"></table>
+      <div style="margin-top:6px"><input id="pname" placeholder="label"> <input id="pval" placeholder="value (number/true/text)"> <button id="padd">Set</button></div>
+    </section>
+    <section>
+      <h2>HTTP requests</h2>
+      <table id="http"></table>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const post = (url, body) => fetch(url, {method: 'POST', body: JSON.stringify(body)});
+let state = null, logSeq = 0, zoom = 4, screenW = 0, screenH = 0;
+const fmt = (v) => Number.isInteger(v) ? String(v) : (Math.abs(v) >= 1e6 || (v !== 0 && Math.abs(v) < 1e-3) ? v.toExponential(3) : v.toFixed(4).replace(/\.?0+$/, ''));
+
+function buildChannels() {
+  for (const [id, kind] of [['outnum', 'n'], ['outbool', 'b'], ['innum', 'n'], ['inbool', 'b']]) {
+    const el = $(id);
+    for (let i = 1; i <= 32; i++) {
+      const d = document.createElement('div');
+      d.className = 'ch';
+      d.id = `${id}${i}`;
+      if (id === 'innum') {
+        d.innerHTML = `<label>${i}</label><input type="number" step="any"><button class="x" title="release">✕</button>`;
+        const inp = d.querySelector('input');
+        inp.addEventListener('change', () => post('/api/input', {kind: 'num', ch: i, value: parseFloat(inp.value) || 0}));
+        inp.addEventListener('wheel', (e) => { if (document.activeElement === inp) { e.preventDefault(); const step = e.shiftKey ? 10 : (e.altKey ? 0.1 : 1); inp.value = (parseFloat(inp.value) || 0) - Math.sign(e.deltaY) * step; inp.dispatchEvent(new Event('change')); } }, {passive: false});
+        d.querySelector('.x').onclick = () => post('/api/input', {kind: 'release', ch: i, bool: false});
+      } else if (id === 'inbool') {
+        d.innerHTML = `<label>${i}</label><span class="led" style="cursor:pointer"></span><button class="x" title="release">✕</button>`;
+        d.querySelector('.led').onclick = () => post('/api/input', {kind: 'bool', ch: i, value: !(state && state.in_bool[i - 1])});
+        d.querySelector('.x').onclick = () => post('/api/input', {kind: 'release', ch: i, bool: true});
+      } else if (kind === 'n') {
+        d.innerHTML = `<label>${i}</label><span class="val"></span>`;
+      } else {
+        d.innerHTML = `<label>${i}</label><span class="led"></span>`;
+      }
+      el.appendChild(d);
+    }
+  }
+}
+
+function render(s) {
+  state = s;
+  $('play').textContent = s.paused ? '▶ Run' : '⏸ Pause';
+  $('tick').textContent = s.tick ?? '-';
+  $('tps').textContent = (s.tps || 0).toFixed(0);
+  $('autoreload').checked = s.auto_reload;
+  const err = s.error || s.load_error;
+  $('error').style.display = err ? 'block' : 'none';
+  $('error').textContent = err || '';
+  for (const l of s.logs) {
+    logSeq = Math.max(logSeq, l.seq);
+    const div = document.createElement('div');
+    div.textContent = l.text;
+    if (l.text.startsWith('[error]') || l.text.includes('load failed')) div.className = 'e';
+    else if (l.text.startsWith('[swlua]')) div.className = 's';
+    else if (l.text.startsWith('[bench]')) div.className = 'b';
+    const log = $('log');
+    const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    log.appendChild(div);
+    while (log.childNodes.length > 1000) log.removeChild(log.firstChild);
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+  if (!s.in_num) return;
+  for (let i = 1; i <= 32; i++) {
+    const on = $(`outnum${i}`).querySelector('.val');
+    on.textContent = fmt(s.out_num[i - 1]);
+    on.className = 'val ' + (s.out_num[i - 1] ? 'nz' : 'z');
+    $(`outbool${i}`).querySelector('.led').className = 'led' + (s.out_bool[i - 1] ? ' on' : '');
+    const ni = $(`innum${i}`), inp = ni.querySelector('input');
+    ni.className = 'ch' + (i in s.held_num ? ' held' : '');
+    if (document.activeElement !== inp) inp.value = fmt(s.in_num[i - 1]);
+    const bi = $(`inbool${i}`);
+    bi.className = 'ch' + (i in s.held_bool ? ' held' : '');
+    bi.querySelector('.led').className = 'led' + (s.in_bool[i - 1] ? ' on' : '');
+  }
+  const props = $('props');
+  props.innerHTML = '';
+  for (const [k, v] of Object.entries(s.props).sort()) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td></td><td><input></td>`;
+    tr.children[0].textContent = k;
+    const inp = tr.querySelector('input');
+    inp.value = String(v);
+    inp.onchange = () => post('/api/property', {name: k, value: parseValue(inp.value, typeof v)});
+    props.appendChild(tr);
+  }
+  $('http').innerHTML = (s.http || []).map(([p, u]) => `<tr><td>${p}</td><td>${u.replace(/</g, '&lt;')}</td></tr>`).join('') || '<tr><td class="hint">none</td></tr>';
+  if (s.screen) {
+    $('screensec').style.display = '';
+    if (s.screen.w !== screenW || s.screen.h !== screenH) resizeScreen(s.screen.w, s.screen.h);
+  } else {
+    $('screensec').style.display = 'none';
+  }
+}
+
+function parseValue(t, kind) {
+  if (kind === 'boolean' || t === 'true' || t === 'false') return t === 'true';
+  if (kind === 'number' || (t.trim() !== '' && !isNaN(Number(t)))) return Number(t) || 0;
+  return t;
+}
+
+function resizeScreen(w, h) {
+  screenW = w; screenH = h;
+  const c = $('screen');
+  c.width = w; c.height = h;
+  c.style.width = w * zoom + 'px'; c.style.height = h * zoom + 'px';
+  $('screensize').textContent = `${w}×${h}`;
+}
+
+async function pollState() {
+  try {
+    const r = await fetch('/api/state?since=' + logSeq);
+    render(await r.json());
+  } catch (e) { /* server restarting */ }
+  setTimeout(pollState, 100);
+}
+
+async function pollFrame() {
+  try {
+    if (screenW) {
+      const r = await fetch('/api/frame');
+      if (r.status === 200) {
+        const buf = new Uint8ClampedArray(await r.arrayBuffer());
+        if (buf.length === screenW * screenH * 4) $('screen').getContext('2d').putImageData(new ImageData(buf, screenW, screenH), 0, 0);
+      }
+    }
+  } catch (e) {}
+  setTimeout(pollFrame, 33);
+}
+
+const canvas = $('screen');
+let buttons = 0;
+function touch(e, down) {
+  const r = canvas.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) / zoom), y = Math.floor((e.clientY - r.top) / zoom);
+  $('coords').textContent = `x ${x}  y ${y}`;
+  if (down === undefined) { if (!buttons) return; down = true; }
+  const which = (e.button === 2 || (buttons & 2)) ? 1 : 0;
+  post('/api/touch', {x, y, down, which});
+}
+canvas.addEventListener('mousedown', (e) => { buttons = e.buttons; touch(e, true); });
+canvas.addEventListener('mousemove', (e) => touch(e));
+window.addEventListener('mouseup', (e) => { if (buttons) { touch(e, false); buttons = 0; } });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+$('play').onclick = () => post('/api/control', {action: state && state.paused ? 'resume' : 'pause'});
+$('step').onclick = () => post('/api/control', {action: 'step'});
+$('reset').onclick = () => post('/api/control', {action: 'reset'});
+$('speed').onchange = () => post('/api/control', {action: 'speed', value: parseFloat($('speed').value)});
+$('autoreload').onchange = () => post('/api/control', {action: 'auto_reload', value: $('autoreload').checked ? 1 : 0});
+$('clearlog').onclick = () => { $('log').innerHTML = ''; post('/api/control', {action: 'clear_logs'}); };
+$('zoom').onchange = () => { zoom = parseInt($('zoom').value); if (screenW) resizeScreen(screenW, screenH); };
+$('padd').onclick = () => { const n = $('pname').value.trim(); if (n) post('/api/property', {name: n, value: parseValue($('pval').value)}); };
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === ' ') { e.preventDefault(); $('play').click(); }
+  if (e.key === '.') $('step').click();
+  if (e.key === 'r') $('reset').click();
+});
+
+buildChannels();
+pollState();
+pollFrame();
+</script>
+</body>
+</html>
