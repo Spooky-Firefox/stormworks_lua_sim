@@ -98,6 +98,15 @@ pub struct Sim {
     search: Vec<PathBuf>,
 }
 
+/// The game only allows the composite input/output API in onTick; calling
+/// it from onDraw raises an error there, so it does here too.
+fn tick_only(st: &RefCell<State>, name: &str) -> mlua::Result<()> {
+    if st.borrow().drawing {
+        return Err(mlua::Error::runtime(format!("{name} can only be used in onTick, not in onDraw")));
+    }
+    Ok(())
+}
+
 fn lerr(e: mlua::Error) -> anyhow::Error {
     anyhow!("{e}")
 }
@@ -248,6 +257,7 @@ impl Sim {
         input.set(
             "getNumber",
             lua.create_function(move |_, ch: f64| {
+                tick_only(&st, "input.getNumber")?;
                 Ok(channel_index(ch).map_or(0.0, |i| st.borrow().in_num[i]))
             })?,
         )?;
@@ -255,6 +265,7 @@ impl Sim {
         input.set(
             "getBool",
             lua.create_function(move |_, ch: f64| {
+                tick_only(&st, "input.getBool")?;
                 Ok(channel_index(ch).is_some_and(|i| st.borrow().in_bool[i]))
             })?,
         )?;
@@ -266,6 +277,7 @@ impl Sim {
         output.set(
             "setNumber",
             lua.create_function(move |_, (ch, v): (f64, Option<f64>)| {
+                tick_only(&st, "output.setNumber")?;
                 if let Some(i) = channel_index(ch) {
                     st.borrow_mut().out_num[i] = v.unwrap_or(0.0);
                 }
@@ -276,6 +288,7 @@ impl Sim {
         output.set(
             "setBool",
             lua.create_function(move |_, (ch, v): (f64, Value)| {
+                tick_only(&st, "output.setBool")?;
                 if let Some(i) = channel_index(ch) {
                     st.borrow_mut().out_bool[i] = !matches!(v, Value::Nil | Value::Boolean(false));
                 }
@@ -1107,5 +1120,13 @@ mod tests {
             "controller files are watched"
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn input_in_on_draw_is_an_error() {
+        let code = "function onTick() end function onDraw() local x = input.getNumber(1) end";
+        let mut sim = Sim::new(Source::Code { name: "t".into(), search: vec![], code: code.into() }, opts()).unwrap();
+        let err = sim.step().unwrap_err();
+        assert!(err.contains("input.getNumber can only be used in onTick"), "{err}");
     }
 }
